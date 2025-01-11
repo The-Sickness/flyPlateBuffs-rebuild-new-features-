@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v2.0 - 11.0.7
+-- v2.1 - 11.1.0
 
 local AceConfig = LibStub("AceConfig-3.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
@@ -45,8 +45,11 @@ EpicPlates.defaults = {
         timerPosition = "BELOW",	
         iconXOffset = 0,   
         iconYOffset = 0,
-        iconGlowEnabled = true,	
-        alwaysShowAuras = true,		
+        iconGlowEnabled = false,	
+        alwaysShowAuras = false,
+		auraThresholdMore = 0,
+		auraThresholdLess = 60,
+		
     },
 }
 
