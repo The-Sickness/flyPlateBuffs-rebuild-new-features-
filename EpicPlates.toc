@@ -1,7 +1,7 @@
-## Interface: 110007, 110100
+## Interface: 110100
 ## Title: EpicPlates
 ## Notes: EpicPlates enhances nameplates with customizable buffs, debuffs, and detailed information for improved gameplay.
-## Version: v.2.1
+## Version: v.2.2
 ## Author: Sharpedge-Gaming
 ## IconTexture: 463489
 ## SavedVariablesPerCharacter: EpicPlatesDB
