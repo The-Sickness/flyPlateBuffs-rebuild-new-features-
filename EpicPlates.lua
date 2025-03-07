@@ -1,5 +1,5 @@
 -- Made by Sharpedge_Gaming
--- v2.2 - 11.1.0
+-- v2.3 - 11.1.0
 
 local AceConfig = LibStub("AceConfig-3.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
@@ -7,6 +7,11 @@ local LSM = LibStub("LibSharedMedia-3.0")
 local LDB = LibStub("LibDataBroker-1.1")
 local LDBIcon = LibStub("LibDBIcon-1.0")
 local LibButtonGlow = LibStub("LibButtonGlow-1.0") 
+
+local	C_NamePlate_GetNamePlateForUnit, C_NamePlate_GetNamePlates, CreateFrame, UnitDebuff, UnitBuff, UnitName, UnitIsUnit, UnitIsPlayer, UnitPlayerControlled, UnitIsEnemy, UnitIsFriend, GetSpellInfo, table_sort, strmatch, format, wipe, pairs, GetTime, math_floor =
+		C_NamePlate.GetNamePlateForUnit, C_NamePlate.GetNamePlates, CreateFrame, UnitDebuff, UnitBuff, UnitName, UnitIsUnit, UnitIsPlayer, UnitPlayerControlled, UnitIsEnemy, UnitIsFriend, GetSpellInfo, table.sort, strmatch, format, wipe, pairs, GetTime, math.floor
+
+
 
 local INFO_POINT            = 'TOP'
 local INFO_RELATIVE_POINT   = 'BOTTOM'
@@ -46,7 +51,7 @@ EpicPlates.defaults = {
         iconXOffset = 0,   
         iconYOffset = 0,
         iconGlowEnabled = false,	
-        alwaysShowAuras = false,
+        alwaysShowAuras = true,
 		auraThresholdMore = 0,
 		auraThresholdLess = 60,
 		
@@ -503,6 +508,62 @@ function EpicPlates:OnSpellCastSuccess(event, unit, castGUID, spellId)
     end
 end
 
+local function FilterBuffs(isAlly, frame, type, name, icon, stack, debufftype, duration, expiration, caster, spellID, id)
+    -- Force-show exceptions: always add Vampiric Touch (34914) and Power Word: Pain (589)
+    if spellID == 34914 or spellID == 589 then
+        -- 'my' is whether the aura was cast by the player.
+        local my = (caster == "player")
+        AddBuff(frame, type, icon, stack, debufftype, duration, expiration, my, id)
+        return
+    end
+
+    if type == "HARMFUL" and db.showDebuffs == 5 then return end
+    if type == "HELPFUL" and db.showBuffs == 5 then return end
+
+    local Spells = db.Spells
+    local listedSpell
+    local my = (caster == "player")
+    local cachedID = cachedSpells[name]
+
+    if Spells[spellID] and not db.ignoredDefaultSpells[spellID] then
+        listedSpell = Spells[spellID]
+    elseif cachedID then
+        if cachedID == "noid" then
+            listedSpell = Spells[name]
+        else
+            listedSpell = Spells[cachedID]
+        end
+    end
+
+    -- showDebuffs: 1 = all, 2 = mine + spellList, 3 = only spellList, 4 = only mine, 5 = none
+    -- listedSpell.show: 1 = always, 2 = mine, 3 = never, 4 = on ally, 5 = on enemy
+    if not listedSpell then
+        if db.hidePermanent and duration == 0 then
+            return
+        end
+        if (type == "HARMFUL" and (db.showDebuffs == 1 or ((db.showDebuffs == 2 or db.showDebuffs == 4) and my)))
+           or (type == "HELPFUL" and (db.showBuffs == 1 or ((db.showBuffs == 2 or db.showBuffs == 4) and my))) then
+            AddBuff(frame, type, icon, stack, debufftype, duration, expiration, my, id)
+            return
+        else
+            return
+        end
+    else
+        if (type == "HARMFUL" and (db.showDebuffs == 4 and not my))
+           or (type == "HELPFUL" and (db.showBuffs == 4 and not my)) then
+            return
+        end
+        if (listedSpell.show == 1)
+           or (listedSpell.show == 2 and my)
+           or (listedSpell.show == 4 and isAlly)
+           or (listedSpell.show == 5 and not isAlly) then
+            AddBuff(frame, type, icon, stack, debufftype, duration, expiration, my, id, listedSpell.scale, listedSpell.durationSize, listedSpell.stackSize)
+            return
+        end
+    end
+end
+
+
 function EpicPlates:OnCombatLogEventUnfiltered()
     local _, eventType, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, spellId = CombatLogGetCurrentEventInfo()
 
@@ -579,106 +640,158 @@ function EpicPlates:GetUnitByGUID(guid)
     return nil
 end
 
+-- Define exceptions: these spells will always be shown regardless of thresholds.
+local alwaysShowExceptions = {
+    [34914] = true,  -- Vampiric Touch (verify this spell ID)
+    [589]   = true,  -- Power Word: Pain (verify this spell ID)
+}
+
+-- Function to decide whether to show an aura on the nameplate.
+local function shouldShowAura(aura)
+    -- Always show these specific auras.
+    if alwaysShowExceptions[aura.spellID] then
+        return true
+    end
+
+    -- Retrieve filtering settings.
+    local alwaysShowAuras = EpicPlates.db.profile.alwaysShowAuras
+    local auraThresholdMore = EpicPlates.db.profile.auraThresholdMore or 0
+    local auraThresholdLess = EpicPlates.db.profile.auraThresholdLess or 60
+
+    -- If the user has enabled always-show, bypass filtering.
+    if alwaysShowAuras then
+        return true
+    end
+
+    -- Otherwise, check that the aura's remaining duration (or other properties)
+    -- falls within the acceptable thresholds.
+    if aura.remaining and aura.remaining >= auraThresholdMore and aura.remaining <= auraThresholdLess then
+        return true
+    end
+
+    return false
+end
+
+
+-- Helper function to hide all aura icons on a nameplate’s UnitFrame.
+function EpicPlates:HideAllAuraIcons(unitFrame)
+    for i = 1, MAX_BUFFS do
+        if unitFrame.buffIcons[i] then
+            unitFrame.buffIcons[i].icon:Hide()
+            unitFrame.buffIcons[i].timer:Hide()
+            if unitFrame.buffIcons[i].stackCount then
+                unitFrame.buffIcons[i].stackCount:Hide()
+            end
+            if unitFrame.buffIcons[i].updateFrame then
+                ActionButton_HideOverlayGlow(unitFrame.buffIcons[i].updateFrame)
+            end
+        end
+    end
+    for i = 1, MAX_DEBUFFS do
+        if unitFrame.debuffIcons[i] then
+            unitFrame.debuffIcons[i].icon:Hide()
+            unitFrame.debuffIcons[i].timer:Hide()
+            if unitFrame.debuffIcons[i].stackCount then
+                unitFrame.debuffIcons[i].stackCount:Hide()
+            end
+            if unitFrame.debuffIcons[i].updateFrame then
+                ActionButton_HideOverlayGlow(unitFrame.debuffIcons[i].updateFrame)
+            end
+        end
+    end
+end
+
+-- Helper function to hide any unused aura icons after processing.
+function EpicPlates:HideExtraAuraIcons(unitFrame, buffIndex, debuffIndex)
+    for i = buffIndex, MAX_BUFFS do
+        if unitFrame.buffIcons[i] then
+            unitFrame.buffIcons[i].icon:Hide()
+            unitFrame.buffIcons[i].timer:Hide()
+            if unitFrame.buffIcons[i].stackCount then
+                unitFrame.buffIcons[i].stackCount:Hide()
+            end
+            if unitFrame.buffIcons[i].updateFrame then
+                ActionButton_HideOverlayGlow(unitFrame.buffIcons[i].updateFrame)
+            end
+        end
+    end
+    for i = debuffIndex, MAX_DEBUFFS do
+        if unitFrame.debuffIcons[i] then
+            unitFrame.debuffIcons[i].icon:Hide()
+            unitFrame.debuffIcons[i].timer:Hide()
+            if unitFrame.debuffIcons[i].stackCount then
+                unitFrame.debuffIcons[i].stackCount:Hide()
+            end
+            if unitFrame.debuffIcons[i].updateFrame then
+                ActionButton_HideOverlayGlow(unitFrame.debuffIcons[i].updateFrame)
+            end
+        end
+    end
+end
+
+-- The refactored UpdateAuras function.
 function EpicPlates:UpdateAuras(unit)
-    local NamePlate = C_NamePlate.GetNamePlateForUnit(unit)
-    local UnitFrame = NamePlate and NamePlate.UnitFrame
+    local namePlate = C_NamePlate.GetNamePlateForUnit(unit)
+    if not namePlate or not namePlate.UnitFrame then
+        return
+    end
+    local unitFrame = namePlate.UnitFrame
+    local profile = self.db.profile
+    local alwaysShowAuras = profile.alwaysShowAuras
 
-    if not UnitFrame then return end
-
-    -- Check the configuration option
-    local alwaysShowAuras = self.db.profile.alwaysShowAuras
-
-    -- Hide buffs and debuffs if the unit is not the target or mouseover and alwaysShowAuras is disabled
+    -- If not configured to always show auras and the unit is neither target nor mouseover,
+    -- hide all aura icons and exit.
     if not alwaysShowAuras and not UnitIsUnit(unit, "target") and not UnitIsUnit(unit, "mouseover") then
-        for i = 1, MAX_BUFFS do
-            if UnitFrame.buffIcons[i] then
-                UnitFrame.buffIcons[i].icon:Hide()
-                UnitFrame.buffIcons[i].timer:Hide()
-                if UnitFrame.buffIcons[i].stackCount then
-                    UnitFrame.buffIcons[i].stackCount:Hide()
-                end
-                -- Ensure glow is removed, but only if updateFrame exists
-                if UnitFrame.buffIcons[i].updateFrame then
-                    ActionButton_HideOverlayGlow(UnitFrame.buffIcons[i].updateFrame)
-                end
-            end
-        end
-        for i = 1, MAX_DEBUFFS do
-            if UnitFrame.debuffIcons[i] then
-                UnitFrame.debuffIcons[i].icon:Hide()
-                UnitFrame.debuffIcons[i].timer:Hide()
-                if UnitFrame.debuffIcons[i].stackCount then
-                    UnitFrame.debuffIcons[i].stackCount:Hide()
-                end
-                -- Ensure glow is removed, but only if updateFrame exists
-                if UnitFrame.debuffIcons[i].updateFrame then
-                    ActionButton_HideOverlayGlow(UnitFrame.debuffIcons[i].updateFrame)
-                end
-            end
-        end
+        self:HideAllAuraIcons(unitFrame)
         return
     end
 
-    local buffIndex = 1
-    local debuffIndex = 1
     local currentTime = GetTime()
+    local buffIndex, debuffIndex = 1, 1
 
-    -- Buffs processing
+    -- Process buffs (Helpful auras)
     for i = 1, 40 do
         local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, AuraUtil.AuraFilters.Helpful)
-        if not aura or buffIndex > MAX_BUFFS then break end
+        if not aura or buffIndex > MAX_BUFFS then
+            break
+        end
 
-        -- Filtering logic to skip certain spells
         if not self:IsAuraFiltered(aura.name, aura.spellId, aura.sourceName, aura.expirationTime - currentTime) then
-            local auraUpdateType = AuraUtil.ProcessAura(aura, false, false, true, true)
-            if auraUpdateType == AuraUtil.AuraUpdateChangedType.Buff then
-                self:HandleAuraDisplay(UnitFrame.buffIcons[buffIndex], aura, currentTime, UnitFrame)
+            local updateType = AuraUtil.ProcessAura(aura, false, false, true, true)
+            if updateType == AuraUtil.AuraUpdateChangedType.Buff then
+                self:HandleAuraDisplay(unitFrame.buffIcons[buffIndex], aura, currentTime, unitFrame)
                 buffIndex = buffIndex + 1
             end
         end
     end
 
-    -- Debuffs processing
+    -- Process debuffs (Harmful auras)
     for i = 1, 40 do
         local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, AuraUtil.AuraFilters.Harmful)
-        if not aura or debuffIndex > MAX_DEBUFFS then break end
+        if not aura or debuffIndex > MAX_DEBUFFS then
+            break
+        end
 
-        -- Filtering logic to skip certain spells
-        if not self:IsAuraFiltered(aura.name, aura.spellId, aura.sourceName, aura.expirationTime - currentTime) then
-            local auraUpdateType = AuraUtil.ProcessAura(aura, false, true, false, false)
-            if auraUpdateType == AuraUtil.AuraUpdateChangedType.Debuff then
-                self:HandleAuraDisplay(UnitFrame.debuffIcons[debuffIndex], aura, currentTime, UnitFrame)
+        -- For forced exceptions, immediately show the aura.
+        if aura.spellId == 34914 or aura.spellId == 589 then
+            local updateType = AuraUtil.ProcessAura(aura, false, true, false, false)
+            if updateType == AuraUtil.AuraUpdateChangedType.Debuff then
+                self:HandleAuraDisplay(unitFrame.debuffIcons[debuffIndex], aura, currentTime, unitFrame)
+                debuffIndex = debuffIndex + 1
+            end
+        elseif not self:IsAuraFiltered(aura.name, aura.spellId, aura.sourceName, aura.expirationTime - currentTime) then
+            local updateType = AuraUtil.ProcessAura(aura, false, true, false, false)
+            if updateType == AuraUtil.AuraUpdateChangedType.Debuff then
+                self:HandleAuraDisplay(unitFrame.debuffIcons[debuffIndex], aura, currentTime, unitFrame)
                 debuffIndex = debuffIndex + 1
             end
         end
     end
 
-    -- Hide extra icons and stack counts
-    for i = buffIndex, MAX_BUFFS do
-        if UnitFrame.buffIcons[i] then
-            UnitFrame.buffIcons[i].icon:Hide()
-            UnitFrame.buffIcons[i].timer:Hide()
-            if UnitFrame.buffIcons[i].stackCount then
-                UnitFrame.buffIcons[i].stackCount:Hide()
-            end
-            if UnitFrame.buffIcons[i].updateFrame then
-                ActionButton_HideOverlayGlow(UnitFrame.buffIcons[i].updateFrame)
-            end
-        end
-    end
-    for i = debuffIndex, MAX_DEBUFFS do
-        if UnitFrame.debuffIcons[i] then
-            UnitFrame.debuffIcons[i].icon:Hide()
-            UnitFrame.debuffIcons[i].timer:Hide()
-            if UnitFrame.debuffIcons[i].stackCount then
-                UnitFrame.debuffIcons[i].stackCount:Hide()
-            end
-            if UnitFrame.debuffIcons[i].updateFrame then
-                ActionButton_HideOverlayGlow(UnitFrame.debuffIcons[i].updateFrame)
-            end
-        end
-    end
+    -- Hide any extra icons that were not used.
+    self:HideExtraAuraIcons(unitFrame, buffIndex, debuffIndex)
 end
+
 
 function EpicPlates:HandleAuraDisplay(iconTable, aura, currentTime, UnitFrame)
     local icon = iconTable.icon
@@ -704,7 +817,7 @@ function EpicPlates:HandleAuraDisplay(iconTable, aura, currentTime, UnitFrame)
 
     if not iconTable.updateFrame then
         iconTable.updateFrame = CreateFrame("Frame", nil, UnitFrame)
-        iconTable.updateFrame:SetAllPoints(icon) 
+        iconTable.updateFrame:SetAllPoints(icon)
     end
 
     iconTable.updateFrame:SetScript("OnUpdate", nil)
@@ -716,9 +829,9 @@ function EpicPlates:HandleAuraDisplay(iconTable, aura, currentTime, UnitFrame)
             timer:SetText(string.format("%.1f", remainingTime))
 
             if remainingTime > 5 then
-                timer:SetTextColor(0, 1, 0)  
+                timer:SetTextColor(0, 1, 0)
             else
-                timer:SetTextColor(1, 0, 0)  
+                timer:SetTextColor(1, 0, 0)
             end
 
             if EpicPlates.db.profile.iconGlowEnabled and remainingTime <= 5 and not iconTable.updateFrame.glowApplied and icon:IsShown() then
@@ -731,14 +844,12 @@ function EpicPlates:HandleAuraDisplay(iconTable, aura, currentTime, UnitFrame)
                 iconTable.updateFrame.glowApplied = false
             end
         else
-            
             timer:Hide()
             icon:Hide()
             if iconTable.updateFrame.glowApplied then
                 ActionButton_HideOverlayGlow(iconTable.updateFrame)
                 iconTable.updateFrame.glowApplied = false
             end
-           
             self:SetScript("OnUpdate", nil)
         end
     end)
@@ -773,45 +884,53 @@ function EpicPlates:HandleAuraRemoved(unit, spellId, auraType)
 end
 
 function EpicPlates:IsAuraFiltered(spellName, spellID, casterName, remainingTime)
-    local filters = self.db.profile.auraFilters
-    local alwaysShow = self.db.profile.alwaysShow
-    local thresholdMore = self.db.profile.auraThresholdMore or 60
-    local thresholdLess = self.db.profile.auraThresholdLess or 60
-
-    -- Check if the aura should always be shown based on spellID or spellName
-    if spellID then
-        local spellInfo = C_Spell.GetSpellInfo(spellID)
-        if spellInfo and (alwaysShow.spellIDs[spellID] or alwaysShow.spellNames[spellInfo.name]) then
-            return false
-        end
-    elseif spellName and alwaysShow.spellNames[spellName] then
+    -- Immediately allow Vampiric Touch (34914) and Power Word: Pain (589)
+    if spellID == 34914 or spellID == 589 then
         return false
     end
 
-    -- Filter based on remaining time thresholds
+    local filters = self.db.profile.auraFilters or {}
+    local alwaysShow = self.db.profile.alwaysShow or {}
+    -- Set thresholds to generous defaults so that they don’t inadvertently filter out auras.
+    local thresholdMore = self.db.profile.auraThresholdMore or 0
+    local thresholdLess = self.db.profile.auraThresholdLess or 3600
+
+    -- Check if the aura is explicitly set to always show in the settings.
+    if spellID then
+        local spellInfo = C_Spell.GetSpellInfo(spellID)
+        if spellInfo and ((alwaysShow.spellIDs and alwaysShow.spellIDs[spellID]) or 
+           (alwaysShow.spellNames and alwaysShow.spellNames[spellInfo.name])) then
+            return false
+        end
+    elseif spellName and alwaysShow.spellNames and alwaysShow.spellNames[spellName] then
+        return false
+    end
+
+    -- Filter based on remaining time thresholds.
     if remainingTime and (remainingTime < thresholdMore or remainingTime > thresholdLess) then
         return true
     end
 
-    -- Filter based on spell ID, spell name, or caster name
-    if spellID and filters.spellIDs[spellID] then
+    -- Filter based on additional user-defined filters.
+    if spellID and filters.spellIDs and filters.spellIDs[spellID] then
         return true
     end
 
     if spellName then
         local spellInfo = C_Spell.GetSpellInfo(spellName)
-        if spellInfo and filters.spellNames[spellInfo.name] then
+        if spellInfo and filters.spellNames and filters.spellNames[spellInfo.name] then
             return true
         end
     end
 
-    if casterName and filters.casterNames[casterName] then
+    if casterName and filters.casterNames and filters.casterNames[casterName] then
         return true
     end
 
-    -- If none of the filters apply, the aura is not filtered
     return false
 end
+
+
 
 function EpicPlates:NiceNameplateFrames_Update(unit)
     if not UnitIsUnit('player', unit) then

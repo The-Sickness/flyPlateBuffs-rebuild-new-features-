@@ -1,5 +1,3 @@
--- Made by Sharpedge_Gaming
--- v1.0 - 11.0.2
 
 _G.defaultSpells1 = {
 
@@ -59,6 +57,8 @@ _G.defaultSpells1 = {
 	64901, --Symbol of Hope
 	47788, --Guardian Spirit
 	47585, --Dispersion
+	34914, --Vampiric Touch
+	589, --Shadow Word: Pain
 
 	-- Warlock
 	710, --Banish
@@ -110,7 +110,6 @@ _G.defaultSpells2 = {
 	16166, --Elemental Mastery - burst
 	204288, --Earth Shield
 	114050, --Ascendance
-	188389, --Flame Shock
 
 	-- Druid
 	106951, --Berserk - burst
